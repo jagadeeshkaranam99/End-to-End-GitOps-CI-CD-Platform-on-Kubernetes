@@ -1,0 +1,57 @@
+name: Build, Push & Update GitOps Manifest
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'Dockerfile'
+      - 'requirements.txt'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      short_sha: ${{ steps.vars.outputs.short_sha }}
+    steps:
+      - name: Checkout application code
+        uses: actions/checkout@v4
+
+      - name: Extract short Git commit SHA
+        id: vars
+        run: echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/python-app:${{ steps.vars.outputs.short_sha }}
+
+  update-gitops-manifest:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout infra repository
+        uses: actions/checkout@v4
+        with:
+          repository: jagadeeshkaranam99/gitops-infra-manifests
+          token: ${{ secrets.INFRA_REPO_TOKEN }}
+
+      - name: Update Helm image tag with yq
+        env:
+          SHORT_SHA: ${{ needs.build-and-push.outputs.short_sha }}
+        run: |
+          yq e '.image.tag = strenv(SHORT_SHA)' -i charts/flask-app/values.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add charts/flask-app/values.yaml
+          git commit -m "chore(gitops): bump image tag to ${SHORT_SHA}"
+          git push origin main
